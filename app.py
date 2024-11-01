@@ -1,84 +1,146 @@
-import json
 import dash
 import requests
-from dash import dcc, html, Input, Output, State, ALL
+from dash import dcc, html, Input, Output, State
 import dash_bootstrap_components as dbc
 import plotly.graph_objs as go
 
 from geocoder import get_coordinates_of_city
 
-# Initialize the Dash app
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
+app.title = "Погодо-Проверятель-9000"
 
-# Store weather data globally
-weather_data = {}
+# Это не библиотека, а издевательство
+
+COLUMN_WIDTH = 1500
+
+origin_coords = None
+destination_coords = None
+intermediate_coords = []
+
+min_comfortable_temperature = 8
+max_comfortable_temperature = 30
+min_comfortable_humidity = 30
+max_comfortable_humidity = 8
+max_wind_speed = 40
+max_precipitation_probability = 50
 
 
-# Function to retrieve weather data from Open-Meteo API
-def get_weather_forecast(lat, lon, city_name):
+def get_weather_forecast(lat, lon, city_name, days=7):
     BASE_URL = "https://api.open-meteo.com/v1/forecast"
     query = f"?latitude={lat}&longitude={lon}&hourly=temperature_2m,relative_humidity_2m,wind_speed_10m"
+
+    if days != 7:
+        query += '&forecast_days=' + str(days)
 
     response = requests.get(BASE_URL + query)
     if response.status_code == 200:
         data = response.json()
-        print("got data for ", city_name)
-        # print(f"Weather data for ({lat}, {lon}):\n", json.dumps(data, indent=2))
-        return data  # Return the data for processing
+        return data
     else:
         print(f"Failed to retrieve weather data for ({lat}, {lon}): Status {response.status_code}")
         return None
 
 
-# Define the layout of the app
+def get_weather_quality(lat, lon):
+    BASE_URL = "https://api.open-meteo.com/v1/forecast"
+    request_query = (f'?latitude={lat}&longitude={lon}'
+                     f'&current=temperature_2m,relative_humidity_2m,precipitation_probability,wind_speed_10m')
+
+    try:
+        response = requests.get(BASE_URL + request_query)
+
+        if response.status_code != 200:
+            return
+        weather_data = response.json()
+
+        current_temperature = weather_data['current']['temperature_2m']
+        current_humidity = weather_data['current']['relative_humidity_2m']
+        current_wind_speed = weather_data['current']['wind_speed_10m']
+        current_precipitation_probability = weather_data['current']['precipitation_probability']
+        if (current_temperature < min_comfortable_temperature or
+                current_temperature > max_comfortable_temperature or
+                current_humidity < min_comfortable_humidity or
+                current_humidity > max_comfortable_humidity or
+                current_wind_speed > max_wind_speed or
+                current_precipitation_probability > max_precipitation_probability):
+            return "Погода сомнительная!"
+        return "Погода идеальная!"
+    except Exception as e:
+        return "Ошибка!" + str(e)
+
+
 app.layout = html.Div([
-    html.H2("Weather Route Planner"),
+    html.H2("Погодо-Проверятель-9000",
+            style={'margin-left': 'auto', 'margin-right': 'auto', 'text-align': 'center', 'margin-top': '40px'}),
 
-    # Two-column layout: Left for inputs, Right for checkboxes
     dbc.Row([
-
-        # Left Column: Input fields
         dbc.Col([
             dbc.Row([
-                dbc.Col(html.Label("Origin City:")),
-                dbc.Col(dbc.Input(id='origin-input', type='text', placeholder='Enter origin city'))
+                dbc.Col(html.Label("Город отправления:")),
+                dbc.Col(dbc.Input(id='origin-input', type='text', placeholder='Название города'))
             ], className="mb-3", style={'height': '50px'}),
 
+            html.Div(id='intermediate-points', children=[]),
+
             dbc.Row([
-                dbc.Col(html.Label("Destination City:")),
-                dbc.Col(dbc.Input(id='destination-input', type='text', placeholder='Enter destination city'))
+                dbc.Col(html.Label("Город назначения:")),
+                dbc.Col(dbc.Input(id='destination-input', type='text', placeholder='Название города'))
             ], className="mb-3", style={'height': '50px'}),
 
-            # Placeholder for dynamically added intermediate points
-            html.Div(id='intermediate-points', children=[],
-                     ),
+            dbc.Button("Добавить промежуточный город", id='add-point-btn', color="primary", className="me-2",
+                       style={'margin-left': '50%', 'width': '50%'}),
 
-            # Buttons to add intermediate points and request weather
             dbc.Row([
-                dbc.Col(dbc.Button("Add Intermediate Point", id='add-point-btn', color="primary", className="me-2"),
-                        width="auto"),
-                dbc.Col(dbc.Button("Get Weather Data", id='get-weather-btn', color="success"), width="auto")
-            ], className="mb-3"),
-        ]),
+                dbc.Col(html.Label("Интервал просмотра")),
+                dbc.Col(dcc.Dropdown(
+                    id="plot-interval-dropdown",
+                    options=[
+                        {"label": "3 Дня", "value": "3"},
+                        {"label": "7 Дней", "value": "7"},
+                    ],
+                    value="7",
+                    clearable=False,
+                ))
+            ], className="mb-3", style={'height': '50px', 'margin-top': '20px'}),
 
-        # Right Column: Checkboxes
+            dbc.Button("Получить прогноз", id='get-weather-btn', color="success",
+                       style={'margin-left': '50%', 'width': '50%'}),
+
+            html.H4("Выберите данные для просмотра", style={'margin-top': '20px'}),
+            dcc.Dropdown(
+                id="plot-type-dropdown",
+                options=[
+                    {"label": "Температура", "value": "temperature"},
+                    {"label": "Влажность", "value": "humidity"},
+                    {"label": "Скорость ветра", "value": "wind_speed"},
+                ],
+                value="temperature",
+                clearable=False,
+                style={'margin-bottom': '10px'},
+            ),
+
+        ], style={'max-width': '1000px'}),
+
         dbc.Col([
-            # Checkboxes for selecting data for plotting
             html.Div(id='data-selection', children=[
                 dbc.Checkbox(
-                    id='origin-checkbox', label=f'Origin City', value=True, style={'display': 'none'}
+                    id='origin-checkbox', label=f'PLACEHOLDER YOU SHOULD NOT SEE', value=True, style={'display': 'none'}
                 ),
                 dbc.Checkbox(
-                    id='destination-checkbox', label=f'Destination City', value=True, style={'display': 'none'}
+                    id='destination-checkbox', label=f'PLACEHOLDER YOU SHOULD NOT SEE', value=True,
+                    style={'display': 'none'}
                 )
             ])
-        ])
-    ], style={'width': '1000px'}),
+        ], style={'max-width': '100px'}),
+        dbc.Col([
+            dcc.Graph(id='map')
+        ], style={'flex': '1'})
 
-    # Graphs for temperature, humidity, and wind speed
-    dcc.Graph(id='temperature-graph'),
-    dcc.Graph(id='humidity-graph'),
-    dcc.Graph(id='wind-speed-graph'),
+    ], style={'width': '100%', 'padding-left': '100px', 'padding-top': '20px', 'display': 'flex',
+              'flex-direction': 'row'}),
+
+    dcc.Store(id="session-data", data=None),
+    dcc.Graph(id='selected-graph', style={'display': 'none'}),
 ])
 
 
@@ -91,21 +153,25 @@ app.layout = html.Div([
 def manage_intermediate_points(add_click, delete_clicks, children):
     ctx = dash.callback_context
 
-    # Add a new intermediate point if the add button was clicked
     if ctx.triggered and ctx.triggered[0]['prop_id'] == 'add-point-btn.n_clicks' and add_click:
         point_number = len(children) + 1
         new_point = dbc.Row([
-            dbc.Col(html.Label(f"Intermediate Point {point_number}:"), width=2),
+            dbc.Col(html.Label(f"Промежуточный город {point_number}:")),
             html.Div([
-                dbc.Col(
-                    dbc.Button("Delete", id={'type': 'delete-point-btn', 'index': point_number}, color="danger",
-                               size="sm"),
-                    width="auto"),
-                dbc.Col(dbc.Input(type='text', id={'type': 'intermediate-input', 'index': point_number},
-                                  placeholder=f'Enter city name for point {point_number}', style={'width': '250px'}),
-                        style={'flex': '0'}),
-            ], style={'display': 'flex', 'flex-direction': 'row', 'justify-content': 'space-between', 'width': 'unset', 'gap': '10px'}),
+                # The delete button caused to many problems e.g. reordering the intermediate points numeration,
+                # deleting two points at once, deleting the checkbox, etc.
 
+                # dbc.Button("X", id={'type': 'delete-point-btn', 'index': point_number}, color="danger",
+                #            size="sm", style={'width': '50px', "height": '50px'}
+                #            ),
+
+                dbc.Input(type='text', id={'type': 'intermediate-input', 'index': point_number},
+                          placeholder=f'Название города {point_number}',
+                          style={'width': '351px', 'margin-top': '6px', 'margin-bottom': '6px'}
+                          )
+
+            ], style={'display': 'flex', 'flex-direction': 'row', 'justify-content': 'space-between', 'width': 'unset',
+                      'gap': '10px'}),
 
         ], className="mb-3", id={'type': 'point-row', 'index': point_number},
             style={'height': '50px', 'display': 'flex', 'flex-direction': 'row',
@@ -123,90 +189,101 @@ def manage_intermediate_points(add_click, delete_clicks, children):
     return children
 
 
-# Callback to fetch weather data on button click
 @app.callback(
     Output('data-selection', 'children'),
-    Output('get-weather-btn', 'n_clicks'),  # Dummy output to satisfy Dash callback requirements
+    Output('get-weather-btn', 'n_clicks'),
+    Output('session-data', 'data'),
     Input('get-weather-btn', 'n_clicks'),
+    Input('session-data', 'data'),
+    State('plot-interval-dropdown', 'value'),
     State('origin-input', 'value'),
     State('destination-input', 'value'),
     State('intermediate-points', 'children'),
-    prevent_initial_call=True  # Only triggers after button is clicked
+    prevent_initial_call=True
 )
-def fetch_weather_data(n_clicks, origin_city, destination_city, children):
-    global weather_data  # Use the global weather_data variable
-
+def fetch_weather_data(n_clicks, session_data, plot_interval, origin_city, destination_city, children):
+    global origin_coords, destination_coords, intermediate_coords
     if n_clicks is None:
         raise dash.exceptions.PreventUpdate
 
     if n_clicks:
-        # Get coordinates for origin and destination
+        weather_data = {"data": {}}
+
         origin_coords = get_coordinates_of_city(origin_city)
         destination_coords = get_coordinates_of_city(destination_city)
 
-        # Store weather data for origin and destination
-        weather_data['origin'] = get_weather_forecast(origin_coords["latitude"], origin_coords["longitude"],
-                                                      origin_city)
-        weather_data['destination'] = get_weather_forecast(destination_coords["latitude"],
-                                                           destination_coords["longitude"], destination_city)
+        try:
 
-        # Get coordinates for intermediate points
+            weather_data['data']['origin'] = get_weather_forecast(origin_coords["latitude"], origin_coords["longitude"],
+                                                                  origin_city, days=int(plot_interval))
+        except Exception as e:
+            print("Ошибка!")
+
+        try:
+            weather_data['data']['destination'] = get_weather_forecast(destination_coords["latitude"],
+                                                                       destination_coords["longitude"],
+                                                                       destination_city,
+                                                                       days=int(plot_interval))
+        except Exception as e:
+            print("Ошибка!")
+
         intermediate_coords = []
         for i, point in enumerate(children, start=1):
-            print(i, point)
             try:
                 city_name = point['props']['children'][1]['props']['value']
             except KeyError:
-                city_name = point['props']['children'][1]['props']['children'][1]['props']['children']['props']['value']
+                city_name = point['props']['children'][1]['props']['children'][0]['props']['value']
+            try:
+                coords = get_coordinates_of_city(city_name)
+                intermediate_coords.append(coords)
+                weather_data['data'][f'intermediate_{i}'] = get_weather_forecast(coords["latitude"],
+                                                                                 coords["longitude"],
+                                                                                 city_name, days=int(plot_interval))
+            except Exception as e:
+                print("Ошибка!")
 
-            coords = get_coordinates_of_city(city_name)
-            intermediate_coords.append(coords)
-            weather_data[f'intermediate_{i}'] = get_weather_forecast(coords["latitude"], coords["longitude"], city_name)
-
-        # Create checkboxes for selecting data
         checkboxes = []
         checkboxes.append(dbc.Checkbox(id='origin-checkbox', label=f'Показать', value=True,
                                        style={'height': '50px'}, className="mb-3"))
-        checkboxes.append(
-            dbc.Checkbox(id='destination-checkbox', label=f'Показать', value=True,
-                         style={'height': '50px'}, className="mb-3"))
+
         for i in range(1, len(intermediate_coords) + 1):
-            city_name = children[i - 1]['props']['children'][1]['props']['children'][1]['props']['children']['props']['value']
+            city_name = children[i - 1]['props']['children'][1]['props']['children'][0]['props']['value']
 
             checkboxes.append(dbc.Checkbox(id={'type': f'intermediate-checkbox', 'index': i},
                                            label=f'Показать', value=True,
                                            style={'height': '50px'}, className="mb-3"))
+        checkboxes.append(
+            dbc.Checkbox(id='destination-checkbox', label=f'Показать', value=True,
+                         style={'height': '50px'}, className="mb-3"))
+        return checkboxes, 0, weather_data
 
-        return checkboxes, 0  # Reset the button click count
-
-    return [], 0
+    return [], 0, {'data': None}
 
 
-# Callback to update the graphs based on selected data
 @app.callback(
-    Output('temperature-graph', 'figure'),
-    Output('humidity-graph', 'figure'),
-    Output('wind-speed-graph', 'figure'),
-    # Input('data-selection', 'children'),
+    Output('selected-graph', 'figure'),
+    Output('selected-graph', 'style'),
     Input('get-weather-btn', 'n_clicks'),
     Input('origin-checkbox', 'value'),
     Input('destination-checkbox', 'value'),
+    Input('plot-type-dropdown', 'value'),
     Input({'type': 'intermediate-checkbox', 'index': dash.ALL}, 'value'),
     State("origin-input", "value"),
     State("destination-input", "value"),
     State({'type': 'intermediate-input', 'index': dash.ALL}, 'value'),
-
+    State("session-data", "data"),
 )
-def update_graphs(n_clicks, origin_selected, destination_selected, intermediate_selected, origin_name, destination_name,
-                  intermediate_names):
-    # if n_clicks is None:
-    #     raise dash.exceptions.PreventUpdate
-    print(weather_data)
+def update_graphs(n_clicks, origin_selected, destination_selected, plot_type, intermediate_selected, origin_name,
+                  destination_name,
+                  intermediate_names, session_data):
+    if not session_data:
+        return go.Figure(data=[]), {'display': 'none'}
+
+    weather_data = session_data['data']
     traces_temp = []
     traces_hum = []
     traces_wind = []
 
-    # Origin data
     if origin_selected and 'origin' in weather_data:
         origin_data = weather_data['origin']['hourly']
         traces_temp.append(
@@ -216,7 +293,6 @@ def update_graphs(n_clicks, origin_selected, destination_selected, intermediate_
         traces_wind.append(
             go.Scatter(x=origin_data['time'], y=origin_data['wind_speed_10m'], mode='lines', name=origin_name))
 
-    # Destination data
     if destination_selected and 'destination' in weather_data:
         destination_data = weather_data['destination']['hourly']
         traces_temp.append(go.Scatter(x=destination_data['time'], y=destination_data['temperature_2m'], mode='lines',
@@ -227,13 +303,8 @@ def update_graphs(n_clicks, origin_selected, destination_selected, intermediate_
         traces_wind.append(go.Scatter(x=destination_data['time'], y=destination_data['wind_speed_10m'], mode='lines',
                                       name=destination_name))
 
-    print("INTER SELECTED:", intermediate_selected)
-    print("INTERNAMES:", intermediate_names)
-    # Intermediate data
     for i, selected in enumerate(intermediate_selected, start=1):
-        print("DEBUG 1:", i, selected)
         if selected and f'intermediate_{i}' in weather_data:
-            print("nice!", i)
             intermediate_data = weather_data[f'intermediate_{i}']['hourly']
             traces_temp.append(
                 go.Scatter(x=intermediate_data['time'], y=intermediate_data['temperature_2m'], mode='lines',
@@ -244,32 +315,65 @@ def update_graphs(n_clicks, origin_selected, destination_selected, intermediate_
             traces_wind.append(
                 go.Scatter(x=intermediate_data['time'], y=intermediate_data['wind_speed_10m'], mode='lines',
                            name=intermediate_names[i - 1]))
-        else:
-            print("EPIC FAIL", i, selected)
-    # Create figures
-    temperature_fig = go.Figure(data=traces_temp)
-    temperature_fig.update_layout(title='Temperature over Time', xaxis_title='Time', yaxis_title='Temperature (°C)')
 
-    humidity_fig = go.Figure(data=traces_hum)
-    humidity_fig.update_layout(title='Humidity over Time', xaxis_title='Time', yaxis_title='Humidity (%)')
+    if plot_type == "temperature":
+        fig = go.Figure(data=traces_temp)
+        fig.update_layout(title='Прогноз температуры', xaxis_title='Время', yaxis_title='Температура (°C)')
+    elif plot_type == "humidity":
+        fig = go.Figure(data=traces_hum)
+        fig.update_layout(title='Прогноз влажности', xaxis_title='Время', yaxis_title='Влажность (%)')
+    elif plot_type == "wind_speed":
+        fig = go.Figure(data=traces_wind)
+        fig.update_layout(title='Прогноз скорости ветра', xaxis_title='Время',
+                          yaxis_title='Скорость ветра (км/ч)')
 
-    wind_speed_fig = go.Figure(data=traces_wind)
-    wind_speed_fig.update_layout(title='Wind Speed over Time', xaxis_title='Time', yaxis_title='Wind Speed (km/h)')
-
-    return temperature_fig, humidity_fig, wind_speed_fig
-
-
-# @app.callback(
-#     Output("output-component-id", "children"),
-#     Input({'type': 'intermediate-checkbox', 'index': ALL}, 'value'),
-#     Input("origin-checkbox", "value")
-# )
-# def update_output(values, values2):
-#     # values will be a list of the 'value' property for each component that matches the pattern
-#     print(values, values2)
-#     return f"Checkbox values: {values} {values2}"
+    if traces_temp or traces_hum or traces_wind:
+        return fig, {'display': 'block'}
+    else:
+        return fig, {'display': 'none'}
 
 
-# Run the app
+@app.callback(
+    Output('map', 'figure'),
+    Input('map', 'id'),
+    Input('get-weather-btn', 'n_clicks'),
+)
+def update_map(_, n_clicks):
+    global origin_coords, destination_coords, intermediate_coords
+
+    if not origin_coords or not destination_coords:
+        return go.Figure(data=[], layout=go.Layout(margin={"r": 0, "t": 0, "l": 0, "b": 0}))
+
+    all_coords = [origin_coords] + intermediate_coords + [destination_coords]
+
+    all_coords = [(i['latitude'], i['longitude']) for i in all_coords]
+
+    icons = [get_weather_quality(*coord) for coord in all_coords]
+
+    latitudes, longitudes = zip(*all_coords)
+    line_trace = go.Scattermapbox(
+        lat=latitudes,
+        lon=longitudes,
+        mode='lines+markers+text',
+        text=icons,
+        textposition="top right",
+        marker=dict(size=10, color="blue"),
+        line=dict(width=2, color="blue"),
+    )
+
+    fig = go.Figure(line_trace)
+    fig.update_layout(
+        mapbox=dict(
+            style="open-street-map",
+            zoom=1,
+            center=dict(lat=(origin_coords['latitude'] + destination_coords['latitude']) / 2,
+                        lon=(origin_coords['longitude'] + destination_coords['longitude']) / 2)
+        ),
+        margin={"r": 0, "t": 0, "l": 0, "b": 0}
+    )
+
+    return fig
+
+
 if __name__ == '__main__':
     app.run_server(debug=True)
